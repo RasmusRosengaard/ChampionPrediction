@@ -51,7 +51,7 @@ BATCH_SIZE       = 512
 
 # Maximum number of full passes through the training data.
 # EarlyStopping (patience=5) will stop before this if validation loss plateaus.
-EPOCHS           = 1000
+EPOCHS           = 30
 
 LEARNING_RATE    = 1e-3
 
@@ -397,14 +397,18 @@ def build_and_compile(vocab_size: int) -> DraftModel:
 
 
 def main() -> None:
-    Path(MODEL_DIR).mkdir(exist_ok=True)
-
     dataset = DraftDataset(MATCH_DIR)
-    if dataset.load() == 0:
+    n_samples = dataset.load()
+    if n_samples == 0:
         print("No samples found — run crawler.py first.")
         return
 
-    dataset.vocab.save(os.path.join(MODEL_DIR, "vocab.pkl"))
+    n_matches = len(list(Path(MATCH_DIR).glob("*.json")))
+    out_dir = f"{MODEL_DIR}_{n_matches}_matches"
+    Path(out_dir).mkdir(exist_ok=True)
+    print(f"Saving model to {out_dir}/")
+
+    dataset.vocab.save(os.path.join(out_dir, "vocab.pkl"))
     train_ds, val_ds = dataset.to_tf_datasets()
 
     model = build_and_compile(dataset.vocab.size)
@@ -416,7 +420,7 @@ def main() -> None:
 
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(MODEL_DIR, "best.weights.h5"),
+            filepath=os.path.join(out_dir, "best.weights.h5"),
             save_best_only=True,
             save_weights_only=True,
             monitor="val_loss",
@@ -439,8 +443,8 @@ def main() -> None:
     print(f"\nTraining on {dataset.vocab.size - 1} champions. Target: {EPOCHS} epochs.\n")
     model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
 
-    model.save(os.path.join(MODEL_DIR, "draft_model.keras"))
-    print(f"\nSaved to {MODEL_DIR}/")
+    model.save(os.path.join(out_dir, "draft_model.keras"))
+    print(f"\nSaved to {out_dir}/")
 
 
 if __name__ == "__main__":

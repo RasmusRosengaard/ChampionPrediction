@@ -36,12 +36,29 @@ from train import (
 
 TOP_N = 10   # how many recommendations to show per query
 
+
+def find_latest_model_dir() -> str:
+    """Returns the model folder with the highest match count, e.g. model_5000_matches."""
+    candidates = sorted(
+        Path(".").glob(f"{MODEL_DIR}_*_matches"),
+        key=lambda p: int(p.name.split("_")[1]) if p.name.split("_")[1].isdigit() else 0,
+        reverse=True,
+    )
+    if candidates:
+        return str(candidates[0])
+    # Fall back to plain MODEL_DIR for backwards compatibility
+    return MODEL_DIR
+
+
 # ─── Loader ───────────────────────────────────────────────────────────────────
 
 class Predictor:
     """Loads a saved model + vocab and exposes a recommend() method."""
 
-    def __init__(self, model_dir: str = MODEL_DIR):
+    def __init__(self, model_dir: str = None):
+        if model_dir is None:
+            model_dir = find_latest_model_dir()
+            print(f"Using model: {model_dir}")
         vocab_path  = os.path.join(model_dir, "vocab.pkl")
         model_path  = os.path.join(model_dir, "draft_model.keras")
         weights_path = os.path.join(model_dir, "best.weights.h5")
@@ -175,6 +192,11 @@ SCENARIOS = [
         "role": "BOTTOM",
         "ally_picks":  ["Malphite", "Elise", "Zoe", "Lulu"],
         "enemy_picks": ["Jinx", "Thresh", "Yasuo", "Diana", "Fiora"],
+    },
+    {
+        "role": "JUNGLE",
+        "ally_picks":  ["Varus", "Ryze", "Senna", "Leona"],
+        "enemy_picks": ["Sion", "Nafari", "Lux", "Sivir", "Bard"],
     },
 ]
 
