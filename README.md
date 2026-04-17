@@ -73,11 +73,11 @@ The crawler respects Riot's dev key rate limits (20 req/s, 100 req/2min), backs 
 
 ### Stage 2 — Training (`train.py`)
 
-Trains a neural network on the collected matches. For every match (10 players), 10 training samples are generated — one per participant:
+Trains a neural network on the collected matches. For every match, 5 training samples are generated — one per player on the **winning team only**:
 
-> *"Given these 4 allies + 5 enemies + this role → predict which champion was picked"*
+> *"Given these 4 allies + 5 enemies + this role → what champion should be picked to win?"*
 
-Winning compositions are upweighted in the loss so the model learns to recommend champions from winning contexts, not just common ones.
+By training exclusively on winning compositions the model learns what champion **should** be picked to maximise win chance, not just what people tend to pick. Losing team picks are completely ignored.
 
 **Model architecture:**
 ```
@@ -95,7 +95,7 @@ Ally and enemy embeddings are **separate** — what a champion means as a teamma
 | `HIDDEN_UNITS` | Neurons per layer, e.g. `[256, 128]` |
 | `DROPOUT_RATE` | Fraction of neurons dropped during training to prevent overfitting |
 | `EPOCHS` | Max training passes — early stopping will halt sooner if loss plateaus |
-| `PATCH_FILTER` | Train on a specific patch only, e.g. `"14.10"`. `None` = all patches |
+| `PATCH_FILTER` | Train on a specific patch only, e.g. `"14.10"`. `None` = all patches (recommended until you have 50k+ matches per patch) |
 
 The trained model is saved to `model/draft_model.keras` and `model/vocab.pkl`.
 

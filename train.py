@@ -59,11 +59,6 @@ LEARNING_RATE    = 1e-3
 # The model never learns from validation data — it measures generalisation.
 VALIDATION_SPLIT = 0.1
 
-# Winning compositions are upweighted in the loss so the model learns to
-# recommend champions from winning contexts, not just common ones.
-WEIGHT_WINS      = True
-WIN_WEIGHT       = 2.0    # loss multiplier applied to samples where the team won
-
 # Only train on a specific patch, e.g. "14.10". None = all patches.
 # Retrain with the current patch after each major balance update.
 PATCH_FILTER     = None
@@ -147,12 +142,13 @@ class MatchParser:
     _VALID_ROLES = set(ROLES)
 
     @classmethod
-    def parse(
-        cls,
-        match_json: dict,
-        weight_wins: bool = True,
-        win_weight: float = WIN_WEIGHT,
-    ) -> list[Sample]:
+    def parse(cls, match_json: dict) -> list[Sample]:
+        """
+        Generates one sample per player on the WINNING team only.
+        The label is the champion that was picked in that role on the winning side,
+        teaching the model what champion SHOULD be picked to maximise win chance —
+        not just what people tend to pick.
+        """
         info = match_json.get("match", {}).get("info", {})
         participants = info.get("participants", [])
         if len(participants) != 10:
@@ -164,6 +160,10 @@ class MatchParser:
 
         samples = []
         for p in participants:
+            # Skip losers — we only learn from winning compositions
+            if not p.get("win", False):
+                continue
+
             role = p.get("teamPosition") or p.get("individualPosition", "")
             if role not in cls._VALID_ROLES:
                 continue
@@ -183,8 +183,7 @@ class MatchParser:
                 if e.get("teamId") != team_id and e.get("championName")
             ]
 
-            w = win_weight if (weight_wins and p.get("win", False)) else 1.0
-            samples.append(Sample(allies, enemies, ROLE_TO_IDX[role], target, w))
+            samples.append(Sample(allies, enemies, ROLE_TO_IDX[role], target, weight=1.0))
 
         return samples
 
@@ -202,12 +201,7 @@ class DraftDataset:
         self.vocab = ChampionVocab()
         self._samples: list[Sample] = []
 
-    def load(
-        self,
-        weight_wins: bool = WEIGHT_WINS,
-        win_weight: float = WIN_WEIGHT,
-        patch_filter: str | None = PATCH_FILTER,
-    ) -> int:
+    def load(self, patch_filter: str | None = PATCH_FILTER) -> int:
         files = list(self.match_dir.glob("*.json"))
         print(f"Loading {len(files)} match files…")
         if patch_filter:
@@ -228,7 +222,7 @@ class DraftDataset:
                 skipped_patch += 1
                 continue
 
-            for s in MatchParser.parse(data, weight_wins=weight_wins, win_weight=win_weight):
+            for s in MatchParser.parse(data):
                 all_names.extend(s.ally_champs)
                 all_names.extend(s.enemy_champs)
                 all_names.append(s.target_champ)
