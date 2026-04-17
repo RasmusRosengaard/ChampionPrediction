@@ -7,8 +7,9 @@ crawler_state.json
 player_ranks.json
 crawler.log
 
-# Trained model
+# Trained model (all versions)
 model/
+model_*/
 
 # Python
 __pycache__/
