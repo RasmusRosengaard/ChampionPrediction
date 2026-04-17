@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# Crawler output
+match_files/
+crawler_state.json
+player_ranks.json
+crawler.log
+
+# Trained model
+model/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
