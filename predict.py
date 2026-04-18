@@ -198,6 +198,11 @@ SCENARIOS = [
         "ally_picks":  ["Varus", "Ryze", "Senna", "Leona"],
         "enemy_picks": ["Sion", "Nafari", "Lux", "Sivir", "Bard"],
     },
+    {
+        "role": "TOP",
+        "ally_picks":  ["Rengar","Ryze", "Senna", "Leona"],
+        "enemy_picks": ["Sion", "Nafari", "Lux", "Sivir", "Bard"],
+    },
 ]
 
 

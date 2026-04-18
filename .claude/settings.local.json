@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip --version)"
+      "Bash(pip --version)",
+      "Bash(grep -E \"\\\\.py$|\\\\.json$|\\\\.md$|^d\")",
+      "Bash(python -c \"from dotenv import load_dotenv; import os; load_dotenv\\(\\); k = os.getenv\\('RIOT_API_KEY',''\\); print\\('Key starts with:', k[:10] if k else 'EMPTY'\\); print\\('Key length:', len\\(k\\)\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

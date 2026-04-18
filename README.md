@@ -165,6 +165,19 @@ Valid roles: `TOP`, `JUNGLE`, `MID`, `BOTTOM`, `SUPPORT` (or `UTILITY`)
 
 ---
 
+## Important: What the Model Optimises For
+
+The model does **not** suggest lane counters. It has no concept of individual matchups — it sees the **entire allied team and the entire enemy team** as a whole, and recommends whatever champion winning teams most often picked in that situation.
+
+In practice this means:
+- It will often suggest lane counters, because good players do tend to pick them — but only when they also fit the overall composition.
+- It may suggest a champion that *loses* the lane matchup but provides crucial team-wide value (engage, peel, split-push threat, etc.) that the enemy team struggles to deal with collectively.
+- It will down-rank champions that are strong in isolation but clash with your existing ally picks (e.g. two champions that compete for the same win condition).
+
+Think of it as *"what did winning teams pick in this exact draft situation?"* rather than *"what beats the enemy laner?"*
+
+---
+
 ## Data & Model Quality
 
 | Matches collected | Expected quality |
