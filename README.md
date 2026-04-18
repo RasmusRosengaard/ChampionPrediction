@@ -25,7 +25,7 @@ pip install -r requirements.txt
 # 4. Add your Riot API key
 cp .env.example .env
 # Open .env and replace RGAPI-your-key-here with your key
-# Get a free dev key at https://developer.riotgames.com
+# Get a free dev key at https://developer.riotgames.com (expires every 24 hours)
 
 # 5. Collect match data
 python crawler.py
@@ -33,7 +33,10 @@ python crawler.py
 # 6. Train the model
 python train.py
 
-# 7. Run predictions
+# 7. Evaluate all trained models
+python evaluate.py
+
+# 8. Run predictions
 python predict.py
 ```
 
@@ -41,26 +44,26 @@ python predict.py
 
 ## How It Works
 
-The pipeline has three stages: **data collection**, **training**, and **prediction**.
+The pipeline has four stages: **data collection**, **training**, **evaluation**, and **prediction**.
+
+---
 
 ### Stage 1 — Data Collection (`crawler.py`)
 
 Crawls the Riot API starting from a list of seed summoners and snowballs through their games to build a dataset of ranked Solo/Duo matches.
 
 ```
-Seed summoner → fetch their 100 matches → save each match as JSON
-                                         → extract 10 player PUUIDs per match
-                                         → add unseen PUUIDs to queue
-                                         → repeat
+Seed summoner → fetch their matches → save each match as JSON
+                                     → extract 10 player PUUIDs per match
+                                     → add unseen PUUIDs to queue
+                                     → repeat
 ```
 
-Each match is saved as `match_files/{matchId}.json` and includes:
-- Full participant data (champion, role, kills, items, etc.)
-- Win/loss per player
-- Game patch version
-- Crawler metadata (elo tier of the discovering player)
+Each match is saved as `match_files/{matchId}.json` and includes full participant data (champion, role, kills, items), win/loss per player, game patch version, and the elo tier of the discovering player.
 
 The crawler respects Riot's dev key rate limits (20 req/s, 100 req/2min), backs off automatically on 429s, and can be interrupted and resumed at any time via `crawler_state.json`.
+
+> **Note:** Riot development API keys expire every 24 hours. Regenerate your key at [developer.riotgames.com](https://developer.riotgames.com) if you get HTTP 401 errors.
 
 **Config** (top of `crawler.py`):
 | Variable | Description |
@@ -88,20 +91,46 @@ role  [1 role index]   → Embedding (16d)                    → [16]  ─┘
 
 Ally and enemy embeddings are **separate** — what a champion means as a teammate is learned independently from what it means as a threat to play against.
 
+Each version of the model is saved to its own folder (`model_{n}_matches/`) so you can compare checkpoints over time.
+
 **Config** (top of `train.py`):
 | Variable | Description |
 |---|---|
 | `EMBEDDING_DIM` | Size of each champion's learned vector (default 64) |
 | `HIDDEN_UNITS` | Neurons per layer, e.g. `[256, 128]` |
 | `DROPOUT_RATE` | Fraction of neurons dropped during training to prevent overfitting |
-| `EPOCHS` | Max training passes — early stopping will halt sooner if loss plateaus |
-| `PATCH_FILTER` | Train on a specific patch only, e.g. `"14.10"`. `None` = all patches (recommended until you have 50k+ matches per patch) |
-
-The trained model is saved to `model/draft_model.keras` and `model/vocab.pkl`.
+| `EPOCHS` | Max training passes — early stopping halts sooner if loss plateaus |
+| `PATCH_FILTER` | Train on a specific patch only, e.g. `"14.10"`. `None` = all patches |
 
 ---
 
-### Stage 3 — Prediction (`predict.py`)
+### Stage 3 — Evaluation (`evaluate.py`)
+
+Evaluates all trained model checkpoints on the same held-out test split and produces a comparison chart and results table.
+
+```bash
+python evaluate.py
+# or compare specific checkpoints:
+python evaluate.py --model-dirs model_6330_matches model_50000_matches
+```
+
+**Metrics:**
+| Metric | Description |
+|---|---|
+| **Loss** | Cross-entropy loss — lower is better |
+| **Top-1 Accuracy** | Correct champion is the #1 pick |
+| **Top-3 Accuracy** | Correct champion is in the top 3 picks |
+| **Top-5 Accuracy** | Correct champion is in the top 5 picks |
+
+The script saves a bar chart comparing all models across every metric:
+
+![Model comparison](evaluation_curves.png)
+
+Results are also saved to `evaluation_results.json` for programmatic use.
+
+---
+
+### Stage 4 — Prediction (`predict.py`)
 
 Loads the saved model and returns ranked champion recommendations for a given draft state. Works with partial picks — empty slots are masked out and ignored.
 
@@ -152,11 +181,14 @@ More data = better predictions. Retrain after each major patch by setting `PATCH
 
 ```
 ChampionPrediction/
-├── crawler.py          # Riot API data crawler
-├── train.py            # Model training
-├── predict.py          # Champion recommendations
-├── requirements.txt    # Python dependencies
-├── .env.example        # API key template
-├── match_files/        # Saved match JSON (git ignored)
-└── model/              # Trained model + vocab (git ignored)
+├── crawler.py              # Riot API data crawler
+├── train.py                # Model training
+├── evaluate.py             # Model evaluation & comparison charts
+├── predict.py              # Champion recommendations
+├── requirements.txt        # Python dependencies
+├── .env.example            # API key template
+├── evaluation_curves.png   # Latest model comparison chart
+├── evaluation_results.json # Latest evaluation metrics (JSON)
+├── match_files/            # Saved match JSON (git ignored)
+└── model_*/                # Trained model checkpoints (git ignored)
 ```

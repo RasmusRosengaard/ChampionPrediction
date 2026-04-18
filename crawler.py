@@ -24,11 +24,10 @@ if not API_KEY:
     sys.exit("RIOT_API_KEY not set — add it to your .env file.")
 
 SEED_SUMMONERS = [
-    "r3r0ni#exe",
-    "r3r0ni#exe1",
+    "r3r0ni#EXE",  
 ]
 
-TARGET_MATCHES = 10000
+TARGET_MATCHES = 100000
 OUTPUT_DIR = "match_files"
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -202,18 +201,26 @@ def num_to_tier(n: float) -> str:
 
 # ─── Persistence ──────────────────────────────────────────────────────────────
 
-def load_state() -> tuple[set[str], set[str]]:
+def load_state() -> tuple[set[str], set[str], set[str]]:
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
-        return set(data.get("processed_puuids", [])), set(data.get("downloaded_matches", []))
-    return set(), set()
+        return (
+            set(data.get("processed_puuids", [])),
+            set(data.get("downloaded_matches", [])),
+            set(data.get("seen_puuids", [])),
+        )
+    return set(), set(), set()
 
 
-def save_state(processed: set[str], downloaded: set[str]) -> None:
+def save_state(processed: set[str], downloaded: set[str], seen: set[str]) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(
-            {"processed_puuids": list(processed), "downloaded_matches": list(downloaded)},
+            {
+                "processed_puuids": list(processed),
+                "downloaded_matches": list(downloaded),
+                "seen_puuids": list(seen),
+            },
             f,
         )
 
@@ -267,7 +274,7 @@ def resolve_tier(puuid: str, estimated_tier: str, ranks: dict[str, str]) -> str:
 def crawl() -> None:
     Path(OUTPUT_DIR).mkdir(exist_ok=True)
 
-    processed_puuids, state_matches = load_state()
+    processed_puuids, state_matches, saved_seen = load_state()
     ranks = load_ranks()
 
     # Disk is the source of truth for what's actually downloaded
@@ -282,9 +289,23 @@ def crawl() -> None:
         )
         processed_puuids.clear()
 
+    # Old state format had no seen_puuids — can't trust processed set either,
+    # because participants from prior runs were never persisted. Clear it so
+    # the seed re-reads cached matches and rebuilds the queue from disk.
+    if not saved_seen and processed_puuids:
+        cprint("[info] Old state format — clearing processed set to rebuild queue from disk")
+        processed_puuids.clear()
+
     # Queue items: (puuid, estimated_tier)
     queue: deque[tuple[str, str]] = deque()
-    seen_puuids: set[str] = set(processed_puuids)
+    seen_puuids: set[str] = set(processed_puuids) | saved_seen
+
+    # Re-populate queue from players discovered but not yet processed
+    pending = saved_seen - processed_puuids
+    for puuid in pending:
+        queue.append((puuid, ranks.get(puuid, "GOLD")))
+    if pending:
+        cprint(f"[resume] Re-queued {len(pending)} pending player(s) from previous run")
 
     # ── Bootstrap from seed summoners ────────────────────────────────────────
     cprint(f"[boot] Resolving {len(SEED_SUMMONERS)} seed summoner(s)…")
@@ -308,6 +329,24 @@ def crawl() -> None:
     matches_collected = len(downloaded_matches)
     save_checkpoint_counter = 0
 
+    # If queue is still empty but we haven't hit the target, the state is
+    # inconsistent (seen_puuids incomplete). Reset so seeds re-run and rebuild
+    # the queue by re-reading cached match files from disk.
+    if not queue and matches_collected < TARGET_MATCHES:
+        cprint("[info] Queue empty but target not reached — resetting state to rebuild from disk")
+        log.info("Queue empty on start — clearing processed/seen sets to rebuild")
+        processed_puuids.clear()
+        seen_puuids.clear()
+        queue.clear()
+        for name in SEED_SUMMONERS:
+            puuid = get_puuid_by_riot_id(name)
+            if not puuid:
+                continue
+            tier = ranks.get(puuid) or get_rank(puuid) or "GOLD"
+            ranks[puuid] = tier
+            queue.append((puuid, tier))
+            seen_puuids.add(puuid)
+
     cprint(
         f"[start] target={TARGET_MATCHES}  already_have={matches_collected}"
         f"  queue={len(queue)}"
@@ -316,84 +355,88 @@ def crawl() -> None:
         f"Crawl started. target={TARGET_MATCHES} have={matches_collected} queue={len(queue)}"
     )
 
+    def _snowball(match_data: dict, tier: str) -> None:
+        participants: list[str] = match_data.get("metadata", {}).get("participants", [])
+        for p_puuid in participants:
+            if p_puuid not in seen_puuids:
+                seen_puuids.add(p_puuid)
+                queue.append((p_puuid, tier))
+
     # ── Main loop ─────────────────────────────────────────────────────────────
-    while queue and matches_collected < TARGET_MATCHES:
-        puuid, estimated_tier = queue.popleft()
+    try:
+        while queue and matches_collected < TARGET_MATCHES:
+            puuid, estimated_tier = queue.popleft()
 
-        if puuid in processed_puuids:
-            continue
-
-        # Confirm (or fetch) this player's actual rank
-        tier = resolve_tier(puuid, estimated_tier, ranks)
-
-        # Fetch their ranked match list
-        match_ids = get_match_ids(puuid)
-        log.info(f"[player] {puuid[:16]}…  tier={tier}  match_ids={len(match_ids)}")
-
-        for match_id in match_ids:
-            if matches_collected >= TARGET_MATCHES:
-                break
-
-            out_path = Path(OUTPUT_DIR) / f"{match_id}.json"
-
-            # Skip if already on disk (covers both state-tracked and orphaned files)
-            if match_id in downloaded_matches or out_path.exists():
-                downloaded_matches.add(match_id)
+            if puuid in processed_puuids:
                 continue
 
-            log.info(f"  [fetch]  #{matches_collected + 1:<5}  {match_id}")
-            match_data = get_match(match_id)
-            if not match_data:
+            tier = resolve_tier(puuid, estimated_tier, ranks)
+            match_ids = get_match_ids(puuid)
+            log.info(f"[player] {puuid[:16]}…  tier={tier}  match_ids={len(match_ids)}")
+
+            for match_id in match_ids:
+                if matches_collected >= TARGET_MATCHES:
+                    break
+
+                out_path = Path(OUTPUT_DIR) / f"{match_id}.json"
+
+                if match_id in downloaded_matches or out_path.exists():
+                    downloaded_matches.add(match_id)
+                    # Snowball participants from disk so the queue stays populated on resume
+                    try:
+                        with open(out_path, encoding="utf-8") as fh:
+                            cached = json.load(fh)
+                        _snowball(cached.get("match", cached), tier)
+                    except Exception:
+                        pass
+                    continue
+
+                log.info(f"  [fetch]  #{matches_collected + 1:<5}  {match_id}")
+                match_data = get_match(match_id)
+                if not match_data:
+                    downloaded_matches.add(match_id)
+                    continue
+
+                info = match_data.get("info", {})
+                champs = [p.get("championName", "?") for p in info.get("participants", [])]
+                duration_s = info.get("gameDuration", 0)
+                duration = f"{duration_s // 60}m{duration_s % 60:02d}s"
+
+                game_version = info.get("gameVersion", "")
+                patch = ".".join(game_version.split(".")[:2])
+
+                wrapped = {
+                    "metadata": {"crawler_tier": tier, "patch": patch},
+                    "match": match_data,
+                }
+                with open(out_path, "w", encoding="utf-8") as fh:
+                    json.dump(wrapped, fh)
+
                 downloaded_matches.add(match_id)
-                continue
+                matches_collected += 1
+                log.info(
+                    f"  [saved]  #{matches_collected:<5}  {match_id}"
+                    f"  {duration}  [{', '.join(champs)}]"
+                )
+                _snowball(match_data, tier)
 
-            info = match_data.get("info", {})
-            champs = [p.get("championName", "?") for p in info.get("participants", [])]
-            duration_s = info.get("gameDuration", 0)
-            duration = f"{duration_s // 60}m{duration_s % 60:02d}s"
+            processed_puuids.add(puuid)
+            save_checkpoint_counter += 1
 
-            game_version = info.get("gameVersion", "")
-            patch = ".".join(game_version.split(".")[:2])  # "14.10.123.456" → "14.10"
+            if save_checkpoint_counter >= 10:
+                save_state(processed_puuids, downloaded_matches, seen_puuids)
+                save_ranks(ranks)
+                save_checkpoint_counter = 0
 
-            wrapped = {
-                "metadata": {
-                    "crawler_tier": tier,
-                    "patch": patch,
-                },
-                "match": match_data,
-            }
-            with open(out_path, "w", encoding="utf-8") as fh:
-                json.dump(wrapped, fh)
+            print_progress(matches_collected, len(seen_puuids), len(queue))
 
-            downloaded_matches.add(match_id)
-            matches_collected += 1
-            log.info(
-                f"  [saved]  #{matches_collected:<5}  {match_id}"
-                f"  {duration}  [{', '.join(champs)}]"
-            )
-
-            # Snowball: enqueue every participant we haven't seen yet
-            participants: list[str] = match_data.get("metadata", {}).get("participants", [])
-            for p_puuid in participants:
-                if p_puuid not in seen_puuids:
-                    seen_puuids.add(p_puuid)
-                    # Inherit current player's tier as initial estimate
-                    queue.append((p_puuid, tier))
-
-        processed_puuids.add(puuid)
-        save_checkpoint_counter += 1
-
-        # Checkpoint every 10 players processed
-        if save_checkpoint_counter >= 10:
-            save_state(processed_puuids, downloaded_matches)
-            save_ranks(ranks)
-            save_checkpoint_counter = 0
-
-        print_progress(matches_collected, len(seen_puuids), len(queue))
+    except KeyboardInterrupt:
+        cprint("\n[interrupted] Saving state before exit…")
+        log.info("Interrupted by user — saving state")
 
     # ── Finish ────────────────────────────────────────────────────────────────
-    print()  # newline after progress bar
-    save_state(processed_puuids, downloaded_matches)
+    print()
+    save_state(processed_puuids, downloaded_matches, seen_puuids)
     save_ranks(ranks)
 
     cprint(

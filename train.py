@@ -441,9 +441,14 @@ def main() -> None:
     ]
 
     print(f"\nTraining on {dataset.vocab.size - 1} champions. Target: {EPOCHS} epochs.\n")
-    model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
+    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks)
 
     model.save(os.path.join(out_dir, "draft_model.keras"))
+
+    history_path = os.path.join(out_dir, "history.json")
+    with open(history_path, "w") as f:
+        json.dump(history.history, f, indent=2)
+
     print(f"\nSaved to {out_dir}/")
 
 
