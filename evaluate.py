@@ -100,11 +100,16 @@ def top_k_accuracy(logits: np.ndarray, targets: np.ndarray, k: int) -> float:
 
 # ─── Evaluation ───────────────────────────────────────────────────────────────
 
+def _model_match_count(p: Path) -> int:
+    """Extract the match count from a model dir name regardless of patch prefix."""
+    try:
+        return int(p.name.split("_")[-2])
+    except (ValueError, IndexError):
+        return 0
+
+
 def find_model_dirs() -> list[Path]:
-    return sorted(
-        Path(".").glob(f"{MODEL_DIR}_*_matches"),
-        key=lambda p: int(p.name.split("_")[1]) if p.name.split("_")[1].isdigit() else 0,
-    )
+    return sorted(Path(".").glob(f"{MODEL_DIR}_*_matches"), key=_model_match_count)
 
 
 def load_model(model_dir: Path, vocab: ChampionVocab) -> tf.keras.Model:
@@ -198,7 +203,7 @@ def print_table(results: dict) -> None:
     print("═" * W + "\n")
 
 
-def plot_comparison(results: dict) -> None:
+def plot_comparison(results: dict, output_dir: str | None = None) -> None:
     valid = {k: v for k, v in results.items() if "error" not in v}
     if not valid:
         print("No valid model results to plot.")
@@ -242,10 +247,10 @@ def plot_comparison(results: dict) -> None:
             )
 
     plt.tight_layout()
-    out_path = "evaluation_curves.png"
+    out_path = str(Path(output_dir) / "evaluation_curves.png") if output_dir else "evaluation_curves.png"
     plt.savefig(out_path, dpi=150)
     print(f"Comparison chart saved to {out_path}")
-    plt.show()
+    plt.close(fig)
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -256,6 +261,10 @@ def main() -> None:
     parser.add_argument(
         "--model-dirs", nargs="*",
         help="Model directories to compare (default: auto-discover all model_*_matches/)"
+    )
+    parser.add_argument(
+        "--output-dir", default=None,
+        help="Save evaluation_curves.png and evaluation_results.json here instead of CWD"
     )
     args = parser.parse_args()
 
@@ -287,11 +296,12 @@ def main() -> None:
 
     # Save numeric results (no history blob)
     out = {k: {kk: vv for kk, vv in v.items() if kk != "history"} for k, v in results.items()}
-    with open("evaluation_results.json", "w") as f:
+    json_path = str(Path(args.output_dir) / "evaluation_results.json") if args.output_dir else "evaluation_results.json"
+    with open(json_path, "w") as f:
         json.dump(out, f, indent=2)
-    print("Saved → evaluation_results.json")
+    print(f"Saved → {json_path}")
 
-    plot_comparison(results)
+    plot_comparison(results, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

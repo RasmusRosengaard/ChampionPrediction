@@ -38,10 +38,22 @@ TOP_N = 10   # how many recommendations to show per query
 
 
 def find_latest_model_dir() -> str:
-    """Returns the model folder with the highest match count, e.g. model_5000_matches."""
+    """Returns the model folder with the highest match count.
+
+    Handles both old format (model_5000_matches) and new format
+    (model_15.8_5000_matches) by reading the count from the second-to-last
+    underscore-separated token, which is always the match count.
+    """
+    def _match_count(p: Path) -> int:
+        parts = p.name.split("_")
+        try:
+            return int(parts[-2])
+        except (ValueError, IndexError):
+            return 0
+
     candidates = sorted(
         Path(".").glob(f"{MODEL_DIR}_*_matches"),
-        key=lambda p: int(p.name.split("_")[1]) if p.name.split("_")[1].isdigit() else 0,
+        key=_match_count,
         reverse=True,
     )
     if candidates:

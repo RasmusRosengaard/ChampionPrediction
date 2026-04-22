@@ -7,6 +7,7 @@ optimal champion to pick. Learns synergy and counter-pick signals
 simultaneously from the final compositions in each match.
 """
 
+import argparse
 import json
 import os
 import pickle
@@ -397,14 +398,24 @@ def build_and_compile(vocab_size: int) -> DraftModel:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train the champion pick predictor.")
+    parser.add_argument(
+        "--patch",
+        default=None,
+        help="Only train on this patch (e.g. '15.8'). Overrides PATCH_FILTER constant.",
+    )
+    args = parser.parse_args()
+    patch_filter = args.patch or PATCH_FILTER
+
     dataset = DraftDataset(MATCH_DIR)
-    n_samples = dataset.load()
+    n_samples = dataset.load(patch_filter=patch_filter)
     if n_samples == 0:
         print("No samples found — run crawler.py first.")
         return
 
     n_matches = len(list(Path(MATCH_DIR).glob("*.json")))
-    out_dir = f"{MODEL_DIR}_{n_matches}_matches"
+    patch_label = patch_filter if patch_filter else "all"
+    out_dir = f"{MODEL_DIR}_{patch_label}_{n_matches}_matches"
     Path(out_dir).mkdir(exist_ok=True)
     print(f"Saving model to {out_dir}/")
 

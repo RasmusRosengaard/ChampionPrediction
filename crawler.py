@@ -6,6 +6,7 @@ Snowballs from seed summoners through participant PUUIDs to build a dataset.
 
 import json
 import os
+import subprocess
 import sys
 import time
 import logging
@@ -29,6 +30,9 @@ SEED_SUMMONERS = [
 
 TARGET_MATCHES = 100000
 OUTPUT_DIR = "match_files"
+MATCHES_PER_PLAYER = 10   # fetch only the N most-recent matches per player (API returns newest-first)
+TRAIN_EVERY_N_MATCHES = 5000
+DDRAGON_VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -116,6 +120,95 @@ class RateLimiter:
 limiter = RateLimiter()
 
 
+# ─── Patch Utilities ──────────────────────────────────────────────────────────
+
+def get_current_patch() -> str:
+    """Return the latest patch in 'major.minor' format (e.g. '15.8') from DDragon.
+
+    Respects the PATCH_FILTER env var so callers can pin a patch without
+    touching the code.
+    """
+    env_patch = os.getenv("PATCH_FILTER", "").strip()
+    if env_patch:
+        cprint(f"[patch] Using pinned patch from env: {env_patch}")
+        return env_patch
+    try:
+        resp = requests.get(DDRAGON_VERSIONS_URL, timeout=10)
+        resp.raise_for_status()
+        versions: list[str] = resp.json()
+        patch = ".".join(versions[0].split(".")[:2])
+        cprint(f"[patch] Current patch: {patch}")
+        log.info(f"Current patch resolved to {patch} (DDragon latest: {versions[0]})")
+        return patch
+    except Exception as exc:
+        log.error(f"Failed to fetch current patch from DDragon: {exc}")
+        sys.exit(
+            "Could not determine the current patch. "
+            "Set the PATCH_FILTER env var (e.g. PATCH_FILTER=15.8) and retry."
+        )
+
+
+def _run_training(n_matches: int, patch: str) -> None:
+    """Train, evaluate, and visualize embeddings for the new model, then resume the crawl."""
+    cwd = Path(__file__).parent
+    cprint(f"\n[train] Auto-training triggered at {n_matches} matches (patch {patch})…")
+    log.info(f"Auto-training triggered. n_matches={n_matches} patch={patch}")
+
+    train_result = subprocess.run(
+        [sys.executable, "train.py", "--patch", patch],
+        cwd=cwd,
+    )
+    if train_result.returncode != 0:
+        log.warning(f"Training exited with code {train_result.returncode}")
+        cprint("[train] Training completed with errors — skipping post-training steps")
+        return
+
+    cprint("[train] Training complete — running evaluation…")
+    log.info("Auto-training finished. Starting evaluation.")
+
+    # The model dir train.py just created — must match train.py's naming logic
+    model_dir = f"model_{patch}_{n_matches}_matches"
+
+    if not (cwd / model_dir).exists():
+        log.warning(f"Expected model dir {model_dir!r} not found — skipping evaluation")
+        cprint(f"[train] Could not find {model_dir} — skipping evaluation")
+        return
+
+    eval_result = subprocess.run(
+        [
+            sys.executable, "evaluate.py",
+            "--model-dirs", model_dir,
+            "--output-dir", model_dir,
+        ],
+        cwd=cwd,
+    )
+    if eval_result.returncode != 0:
+        log.warning(f"Evaluation exited with code {eval_result.returncode}")
+        cprint("[train] Evaluation completed with errors")
+    else:
+        cprint(f"[train] Evaluation saved to {model_dir}/")
+        log.info(f"Evaluation saved to {model_dir}/")
+
+    cprint("[train] Generating embedding visualization…")
+    viz_result = subprocess.run(
+        [
+            sys.executable, "visualize_embeddings.py",
+            "--model-dir", model_dir,
+            "--output",    f"{model_dir}/embedding_visualization.png",
+        ],
+        cwd=cwd,
+    )
+    if viz_result.returncode != 0:
+        log.warning(f"Visualization exited with code {viz_result.returncode}")
+        cprint("[train] Visualization completed with errors")
+    else:
+        cprint(f"[train] Embedding visualization saved to {model_dir}/embedding_visualization.png")
+        log.info(f"Embedding visualization saved to {model_dir}/")
+
+    cprint("[train] All post-training steps done — resuming crawl")
+    log.info("Post-training pipeline complete. Resuming crawl.")
+
+
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 def riot_get(url: str, params: dict | None = None, retries: int = 5) -> dict | list | None:
@@ -166,7 +259,7 @@ def get_puuid_by_riot_id(riot_id: str) -> str | None:
     return account.get("puuid")
 
 
-def get_match_ids(puuid: str, count: int = 100) -> list[str]:
+def get_match_ids(puuid: str, count: int = MATCHES_PER_PLAYER) -> list[str]:
     url = f"{REGIONAL_URL}/lol/match/v5/matches/by-puuid/{puuid}/ids"
     result = riot_get(url, params={"queue": 420, "type": "ranked", "count": count})
     return result if isinstance(result, list) else []
@@ -203,13 +296,17 @@ def num_to_tier(n: float) -> str:
 
 def load_state() -> tuple[set[str], set[str], set[str]]:
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        return (
-            set(data.get("processed_puuids", [])),
-            set(data.get("downloaded_matches", [])),
-            set(data.get("seen_puuids", [])),
-        )
+        try:
+            with open(STATE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return (
+                set(data.get("processed_puuids", [])),
+                set(data.get("downloaded_matches", [])),
+                set(data.get("seen_puuids", [])),
+            )
+        except (json.JSONDecodeError, OSError):
+            cprint(f"[warn] {STATE_FILE} is corrupt or empty — starting fresh (disk files are safe)")
+            log.warning(f"{STATE_FILE} could not be parsed — resetting state")
     return set(), set(), set()
 
 
@@ -274,6 +371,8 @@ def resolve_tier(puuid: str, estimated_tier: str, ranks: dict[str, str]) -> str:
 def crawl() -> None:
     Path(OUTPUT_DIR).mkdir(exist_ok=True)
 
+    current_patch = get_current_patch()
+
     processed_puuids, state_matches, saved_seen = load_state()
     ranks = load_ranks()
 
@@ -328,6 +427,8 @@ def crawl() -> None:
 
     matches_collected = len(downloaded_matches)
     save_checkpoint_counter = 0
+    # Next match count milestone that triggers auto-training
+    next_train_at = ((matches_collected // TRAIN_EVERY_N_MATCHES) + 1) * TRAIN_EVERY_N_MATCHES
 
     # If queue is still empty but we haven't hit the target, the state is
     # inconsistent (seen_puuids incomplete). Reset so seeds re-run and rebuild
@@ -349,10 +450,12 @@ def crawl() -> None:
 
     cprint(
         f"[start] target={TARGET_MATCHES}  already_have={matches_collected}"
-        f"  queue={len(queue)}"
+        f"  queue={len(queue)}  patch={current_patch}"
+        f"  next_train_at={next_train_at}"
     )
     log.info(
-        f"Crawl started. target={TARGET_MATCHES} have={matches_collected} queue={len(queue)}"
+        f"Crawl started. target={TARGET_MATCHES} have={matches_collected}"
+        f" queue={len(queue)} patch={current_patch}"
     )
 
     def _snowball(match_data: dict, tier: str) -> None:
@@ -391,22 +494,29 @@ def crawl() -> None:
                         pass
                     continue
 
-                log.info(f"  [fetch]  #{matches_collected + 1:<5}  {match_id}")
+                log.info(f"  [fetch]  {match_id}")
                 match_data = get_match(match_id)
                 if not match_data:
                     downloaded_matches.add(match_id)
                     continue
 
                 info = match_data.get("info", {})
+                game_version = info.get("gameVersion", "")
+                match_patch = ".".join(game_version.split(".")[:2])
+
+                # Skip matches not on the current patch — still snowball participants
+                if match_patch != current_patch:
+                    log.info(f"  [skip]   {match_id}  patch={match_patch} (not {current_patch})")
+                    downloaded_matches.add(match_id)
+                    _snowball(match_data, tier)
+                    continue
+
                 champs = [p.get("championName", "?") for p in info.get("participants", [])]
                 duration_s = info.get("gameDuration", 0)
                 duration = f"{duration_s // 60}m{duration_s % 60:02d}s"
 
-                game_version = info.get("gameVersion", "")
-                patch = ".".join(game_version.split(".")[:2])
-
                 wrapped = {
-                    "metadata": {"crawler_tier": tier, "patch": patch},
+                    "metadata": {"crawler_tier": tier, "patch": match_patch},
                     "match": match_data,
                 }
                 with open(out_path, "w", encoding="utf-8") as fh:
@@ -419,6 +529,12 @@ def crawl() -> None:
                     f"  {duration}  [{', '.join(champs)}]"
                 )
                 _snowball(match_data, tier)
+
+                if matches_collected >= next_train_at:
+                    next_train_at += TRAIN_EVERY_N_MATCHES
+                    save_state(processed_puuids, downloaded_matches, seen_puuids)
+                    save_ranks(ranks)
+                    _run_training(matches_collected, current_patch)
 
             processed_puuids.add(puuid)
             save_checkpoint_counter += 1
